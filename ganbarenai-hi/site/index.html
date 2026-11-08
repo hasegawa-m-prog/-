@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <title>頑張れなかった日は、さぼった日じゃなくて、休めた日</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: #000; color: #fff; }
+    body {
+      font-family: "Noto Sans JP", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+      min-height: 100svh;
+      display: flex; flex-direction: column; align-items: center;
+      padding: max(20px, env(safe-area-inset-top)) 20px max(28px, env(safe-area-inset-bottom));
+    }
+    header { text-align: center; margin: 8px 0 18px; }
+    header h1 { font-size: 15px; font-weight: 700; letter-spacing: .06em; margin: 0 0 6px; line-height: 1.6; }
+    header p { margin: 0; font-size: 12px; color: #9a9a9a; letter-spacing: .08em; }
+    .player {
+      width: min(100%, 390px);
+      aspect-ratio: 9 / 16;
+      background: #000;
+      border: 1px solid #2a2a2a; border-radius: 14px; overflow: hidden;
+    }
+    video { width: 100%; height: 100%; display: block; background: #000; }
+    .actions { width: min(100%, 390px); display: grid; gap: 10px; margin-top: 18px; }
+    a.btn {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      padding: 14px 18px; border-radius: 999px; text-decoration: none;
+      font-size: 15px; font-weight: 700; letter-spacing: .04em; border: 1px solid #fff;
+    }
+    a.primary { background: #fff; color: #000; }
+    a.secondary { background: transparent; color: #fff; }
+    a.btn svg { width: 18px; height: 18px; }
+    .meta { width: min(100%, 390px); margin-top: 18px; font-size: 12px; color: #8a8a8a; line-height: 1.8; }
+    .meta b { color: #cfcfcf; font-weight: 600; }
+    .tags { margin-top: 6px; color: #cfcfcf; }
+    .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #E0202A; vertical-align: middle; margin-right: 6px; }
+    .hint { margin-top: 14px; font-size: 11px; color: #6f6f6f; line-height: 1.7; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>「頑張れなかった日は、さぼった日じゃなくて、休めた日」</h1>
+    <p>黒背景 × 白い棒人間 × 赤一点 ／ 82秒</p>
+  </header>
+
+  <div class="player">
+    <video id="v" controls playsinline preload="metadata" poster="poster.jpg" src="video.mp4"></video>
+  </div>
+
+  <div class="actions">
+    <a class="btn primary" href="video.mp4" download="ganbarenai-hi.mp4">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/>
+      </svg>
+      動画をダウンロード（MP4・約2.7MB）
+    </a>
+    <a class="btn secondary" href="video.mp4" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M14 3h7v7"/><path d="M21 3 10 14"/><path d="M19 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6"/>
+      </svg>
+      動画だけを開く（長押しで保存）
+    </a>
+  </div>
+
+  <div class="meta">
+    <div><b>形式</b>　縦型 9:16 ／ 1080×1920 ／ 30fps ／ H.264 + AAC</div>
+    <div><b>尺</b>　82.8秒（4幕構成：フック → 現実 → 転換 → 着地）</div>
+    <div><span class="dot"></span><b>赤</b>　胸の奥の小さな点＝何もできなかった自分を責める痛み</div>
+    <div class="tags">#人生 #エッセイ #自分を責めない</div>
+  </div>
+
+  <p class="hint">
+    iPhone：ダウンロードボタン → 共有メニューから「ビデオを保存」。<br>
+    Android：ダウンロードボタンを押すとそのまま保存されます。<br>
+    うまくいかないときは、下のボタンで動画だけを開き、長押しして保存してください。
+  </p>
+</body>
+</html>
