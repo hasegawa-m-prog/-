@@ -3,3 +3,7 @@ __pycache__/
 video/build/lines/
 video/build/narration.wav
 video/build/*.log
+video/out/*/lines/
+video/out/*/narration.wav
+video/out/*/*.log
+video/out/*/preview/
