@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import subprocess
+import urllib.parse
+import urllib.request
 import wave
 from pathlib import Path
 
-import edge_tts
 import numpy as np
 
 from draw import (
@@ -29,16 +29,19 @@ DOCS = ROOT / "docs"
 BGM = ROOT / "bgm" / "nagareboshi.mp3"
 
 SR = 48000
-VOICE = "ja-JP-NanamiNeural"
-PITCH = "-3Hz"
-BODY_RATE = "-22%"
-SLOW_RATE = "-32%"  # hook and the final sentence, about 10% slower
+# 青山龍星ノーマル。このリポジトリの video/make_audio.py と同じ話者。
+VV_BASE = "http://127.0.0.1:50021"
+SPEAKER_NAME = "青山龍星"
+SPEAKER_STYLE = "ノーマル"
+BODY_SPEED = 0.86
+SLOW_SPEED = 0.77  # hook and the final sentence, about 10% slower
+PITCH_SCALE = -0.03
+INTONATION = 0.70
 LEAD = 0.45
-COMMA_GAP = 0.40
+COMMA_PAUSE = 0.40
 PERIOD_GAP = 0.92
 ACT_GAP = 1.50
 END_GAP = 1.00
-TAIL_KEEP = 0.06
 
 POSE_JA = {
     "stand": "まっすぐ立っている",
@@ -93,11 +96,33 @@ POSE_EN = {
 POS_EN = {"L": "on the left", "C": "in the center", "R": "on the right", "FL": "far left", "FR": "far right"}
 
 
-def spoken(text: str) -> str:
-    return "".join(ch for ch in text if ch not in "、。？")
+def _vv(path: str, body: bytes | None = None, content_type: str | None = None) -> bytes:
+    headers = {}
+    if content_type:
+        headers["Content-Type"] = content_type
+    req = urllib.request.Request(
+        VV_BASE + path,
+        data=b"" if body is None else body,
+        method="POST" if body is not None else "GET",
+        headers=headers,
+    )
+    with urllib.request.urlopen(req, timeout=180) as res:
+        return res.read()
 
 
-def decode_mp3(data: bytes) -> np.ndarray:
+def speaker_id() -> int:
+    """Use 青山龍星ノーマル, the voice already registered for this repo."""
+    speakers = json.loads(_vv("/speakers"))
+    for speaker in speakers:
+        if speaker.get("name") != SPEAKER_NAME:
+            continue
+        for style in speaker.get("styles", []):
+            if style.get("name") == SPEAKER_STYLE:
+                return int(style["id"])
+    raise RuntimeError("青山龍星ノーマルがエンジンに見当たりません")
+
+
+def decode_wav(data: bytes) -> np.ndarray:
     proc = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", "pipe:0", "-f", "s16le", "-ac", "1", "-ar", str(SR), "pipe:1"],
         input=data,
@@ -107,123 +132,26 @@ def decode_mp3(data: bytes) -> np.ndarray:
     return np.frombuffer(proc.stdout, dtype=np.int16).copy()
 
 
-async def synthesize(text: str, rate: str):
-    comm = edge_tts.Communicate(
-        text, voice=VOICE, rate=rate, pitch=PITCH, boundary="WordBoundary"
+def synthesize(text: str, speed: float, speaker: int) -> np.ndarray:
+    query_url = "/audio_query?" + urllib.parse.urlencode({"text": text, "speaker": speaker})
+    query = json.loads(_vv(query_url, b""))
+    query["speedScale"] = speed
+    query["pitchScale"] = PITCH_SCALE
+    query["intonationScale"] = INTONATION
+    query["volumeScale"] = 1.0
+    query["prePhonemeLength"] = 0.05
+    query["postPhonemeLength"] = 0.08
+    # A comma pause is scaled by the speaking speed, so set the raw length first.
+    for accent in query.get("accent_phrases", []):
+        pause = accent.get("pause_mora")
+        if pause:
+            pause["vowel_length"] = COMMA_PAUSE * speed
+    wav = _vv(
+        f"/synthesis?speaker={speaker}",
+        json.dumps(query).encode(),
+        "application/json",
     )
-    audio = bytearray()
-    words = []
-    async for chunk in comm.stream():
-        if chunk["type"] == "audio":
-            audio.extend(chunk["data"])
-        elif chunk["type"] == "WordBoundary":
-            words.append(
-                {
-                    "t0": chunk["offset"] / 1e7,
-                    "t1": (chunk["offset"] + chunk["duration"]) / 1e7,
-                    "text": chunk["text"].replace(" ", ""),
-                }
-            )
-    if not words:
-        raise RuntimeError("音声の区切りが返りませんでした: " + text[:40])
-    return decode_mp3(bytes(audio)), words
-
-
-def align(say: str, words: list[dict]) -> None:
-    expect = spoken(say)
-    got = "".join(w["text"] for w in words)
-    if got != expect:
-        raise RuntimeError(f"読みの対応がずれました\n原稿: {expect}\n音声: {got}")
-    indexes = [i for i, ch in enumerate(say) if ch not in "、。？"]
-    cursor = 0
-    for word in words:
-        span = indexes[cursor : cursor + len(word["text"])]
-        word["lo"] = span[0]
-        word["hi"] = span[-1]
-        cursor += len(word["text"])
-
-
-def rebuild(samples: np.ndarray, words: list[dict], say: str):
-    """Keep the breaths the voice already made, and lengthen short commas."""
-    total = len(samples) / SR
-    spans = []
-    extras = []
-    cursor = max(0.0, words[0]["t0"] - 0.05)
-    for i, word in enumerate(words):
-        if i < len(words) - 1:
-            nxt = words[i + 1]
-            natural = max(0.0, nxt["t0"] - word["t1"])
-            mid = word["t1"] + natural * 0.5
-            between = say[word["hi"] + 1 : nxt["lo"]]
-            extra = COMMA_GAP - natural if "、" in between and natural < COMMA_GAP else 0.0
-            spans.append((cursor, min(mid, total)))
-            extras.append(extra)
-            cursor = mid
-        else:
-            spans.append((cursor, min(total, word["t1"] + TAIL_KEEP)))
-            extras.append(0.0)
-    pieces = []
-    mapped = []
-    out_at = 0.0
-    n = len(samples)
-    for (a, b), extra in zip(spans, extras):
-        i0 = max(0, min(n, int(round(a * SR))))
-        i1 = max(i0, min(n, int(round(b * SR))))
-        pieces.append(samples[i0:i1])
-        mapped.append((a, b, out_at))
-        out_at += (i1 - i0) / SR
-        if extra > 0:
-            pieces.append(np.zeros(int(round(extra * SR)), dtype=np.int16))
-            out_at += extra
-    audio = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.int16)
-
-    def map_t(src: float) -> float:
-        for a, b, start in mapped:
-            if a - 0.03 <= src <= b + 0.03:
-                return start + (src - a)
-        return mapped[-1][2] + max(0.0, mapped[-1][1] - mapped[-1][0])
-
-    timed = []
-    for word in words:
-        timed.append({**word, "t0": map_t(word["t0"]), "t1": map_t(word["t1"])})
-    return audio, timed
-
-
-def assign(phrases, words):
-    """Group spoken words onto phrases. A word that crosses a phrase boundary is split by length."""
-    stream = "".join(spoken(p["say"]) for p in phrases)
-    got = "".join(w["text"] for w in words)
-    if stream != got:
-        raise RuntimeError(f"読みの対応がずれました\n原稿: {stream}\n音声: {got}")
-    ranges = []
-    cursor = 0
-    for phrase in phrases:
-        n = len(spoken(phrase["say"]))
-        ranges.append((cursor, cursor + n))
-        cursor += n
-    groups = [[] for _ in phrases]
-    pos = 0
-    for word in words:
-        wlen = len(word["text"])
-        span = max(0.01, word["t1"] - word["t0"])
-        for i, (start, end) in enumerate(ranges):
-            ov0 = max(start, pos)
-            ov1 = min(end, pos + wlen)
-            if ov1 <= ov0:
-                continue
-            groups[i].append(
-                {
-                    **word,
-                    "t0": word["t0"] + span * ((ov0 - pos) / wlen),
-                    "t1": word["t0"] + span * ((ov1 - pos) / wlen),
-                    "text": word["text"][ov0 - pos : ov1 - pos],
-                }
-            )
-        pos += wlen
-    for phrase, group in zip(phrases, groups):
-        if not group:
-            raise RuntimeError("空のフレーズ: " + phrase["say"])
-    return groups
+    return decode_wav(wav)
 
 
 def pad_slots(audio, rows, minimum=2.02, ceiling=89.5):
@@ -271,52 +199,38 @@ def fade_edges(samples: np.ndarray) -> np.ndarray:
     return out.astype(np.int16)
 
 
-async def build_audio(story) -> dict:
-    groups = sentences_of(story["phrases"])
-    jobs = []
-    for index, sentence in enumerate(groups):
-        say = "".join(p["say"] for p in sentence)
-        slow = sentence[0]["act"] == 1 or index == len(groups) - 1
-        jobs.append((say, SLOW_RATE if slow else BODY_RATE))
-
-    sem = asyncio.Semaphore(3)
-
-    async def one(say, rate):
-        async with sem:
-            last = None
-            for attempt in range(4):
-                try:
-                    return await synthesize(say, rate)
-                except Exception as exc:  # network hiccup
-                    last = exc
-                    await asyncio.sleep(1.2 * (attempt + 1))
-            raise last
-
-    synthesized = await asyncio.gather(*(one(say, rate) for say, rate in jobs))
-
+def build_audio(story) -> dict:
+    phrases = story["phrases"]
+    groups = sentences_of(phrases)
+    slow = {id(phrase) for phrase in phrases if phrase["act"] == 1} | {id(phrase) for phrase in groups[-1]}
+    speaker = speaker_id()
     pieces = [np.zeros(int(round(LEAD * SR)), dtype=np.int16)]
     cursor = LEAD
     rows = []
-    for index, (sentence, (samples, words)) in enumerate(zip(groups, synthesized)):
-        say = jobs[index][0]
-        align(say, words)
-        audio, words = rebuild(samples, words, say)
-        grouped = assign(sentence, words)
-        act_end = index + 1 == len(groups) or groups[index + 1][0]["act"] != sentence[0]["act"]
-        if index == len(groups) - 1:
-            desired = END_GAP
-        elif act_end:
-            desired = ACT_GAP
-        else:
-            desired = PERIOD_GAP
-        pause = max(0.2, desired - TAIL_KEEP)
+    for index, phrase in enumerate(phrases):
+        speed = SLOW_SPEED if id(phrase) in slow else BODY_SPEED
+        audio = synthesize(phrase["say"], speed, speaker)
         dur = len(audio) / SR
-        for pi, (phrase, ws) in enumerate(zip(sentence, grouped)):
-            start = cursor + ws[0]["t0"]
-            end = cursor + grouped[pi + 1][0]["t0"] if pi + 1 < len(grouped) else cursor + dur + pause
-            rows.append({"index": len(rows), "start": start, "end": end, "act": phrase["act"]})
+        nxt = phrases[index + 1] if index + 1 < len(phrases) else None
+        if nxt is None:
+            pause = END_GAP
+        elif nxt["act"] != phrase["act"]:
+            pause = ACT_GAP
+        elif phrase["say"].endswith(("。", "？")):
+            pause = PERIOD_GAP
+        else:
+            pause = 0.0
+        rows.append(
+            {
+                "index": index,
+                "start": cursor,
+                "end": cursor + dur + pause,
+                "act": phrase["act"],
+            }
+        )
         pieces.append(audio)
-        pieces.append(np.zeros(int(round(pause * SR)), dtype=np.int16))
+        if pause:
+            pieces.append(np.zeros(int(round(pause * SR)), dtype=np.int16))
         cursor += dur + pause
 
     narration = fade_edges(np.concatenate(pieces))
@@ -328,8 +242,8 @@ async def build_audio(story) -> dict:
         scenes.append({**row, "vis_start": vis_start})
     for i, scene in enumerate(scenes):
         scene["vis_end"] = scenes[i + 1]["vis_start"] if i + 1 < len(scenes) else duration
-        prev = story["phrases"][i - 1] if i else None
-        cur = story["phrases"][i]
+        prev = phrases[i - 1] if i else None
+        cur = phrases[i]
         if prev is None:
             scene["trans"] = "cut"
         elif prev["act"] != cur["act"]:
@@ -341,7 +255,16 @@ async def build_audio(story) -> dict:
     folder = BUILD / story["id"]
     folder.mkdir(parents=True, exist_ok=True)
     write_wav(folder / "narration.wav", narration)
-    payload = {"duration": duration, "scenes": scenes, "rate_body": BODY_RATE, "rate_slow": SLOW_RATE}
+    payload = {
+        "duration": duration,
+        "scenes": scenes,
+        "voice": f"VOICEVOX {SPEAKER_NAME} {SPEAKER_STYLE}",
+        "speaker": speaker,
+        "speed_body": BODY_SPEED,
+        "speed_slow": SLOW_SPEED,
+        "pitch": PITCH_SCALE,
+        "intonation": INTONATION,
+    }
     (folder / "timeline.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     _report(story, scenes, duration)
     return payload
@@ -613,7 +536,7 @@ def write_docs(story, timeline) -> Path:
     a("")
     a("声の方向: 低めから中くらい。ささやく直前のやわらかさ。寝る前に聴いても疲れない声。感情は乗せすぎない。文の終わりは静かに下げる。問いかけも、軽く上げるだけ。強調したい語は大きくせず、わずかに遅くする。")
     a("")
-    a("今回の動画で実際に使った声は、マイクロソフトの日本語音声（七海）です。速さはふだんの約0.78倍、冒頭と最後の一文はさらに約1割遅くしています。音の高さは少しだけ下げています。")
+    a("今回の動画で実際に使った声は、VOICEVOXの青山龍星（ノーマル）です。速さは0.86倍、冒頭と最後の一文は0.77倍です。音の高さは少し下げ、抑揚は抑えています。")
     a("")
     a("ElevenLabs で作る場合の目安:")
     a("- 安定性（Stability）: 75。感情の振れを抑える")
@@ -623,7 +546,7 @@ def write_docs(story, timeline) -> Path:
     a("- 声の高さ: 少し低めの落ち着いたナレーター")
     a("")
     a("VOICEVOX で作る場合の目安:")
-    a("- 話者: 白上虎太郎（ふだん）。低すぎる実況声にはしない")
+    a("- 話者: 青山龍星（ノーマル）")
     a("- 話速: 0.86。冒頭と最後の一文は 0.77")
     a("- 音高: -0.03")
     a("- 抑揚: 0.70")
@@ -680,11 +603,9 @@ def main():
     chosen = sys.argv[2] if len(sys.argv) > 2 else None
     stories = [s for s in STORIES if chosen in (None, s["id"], s["id"].lstrip("0"))]
     if cmd in ("audio", "all"):
-        async def run():
-            for story in stories:
-                print("audio", story["id"], flush=True)
-                await build_audio(story)
-        asyncio.run(run())
+        for story in stories:
+            print("audio", story["id"], flush=True)
+            build_audio(story)
     if cmd in ("render", "all"):
         for story in stories:
             print("render", story["id"], flush=True)
