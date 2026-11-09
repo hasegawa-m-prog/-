@@ -985,10 +985,11 @@ def render_video(timeline_path: Path, audio_path: Path, out_path: Path, max_seco
         "-i", "pipe:0",
         "-i", str(audio_path),
         "-t", f"{duration:.3f}",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.0",
+        "-preset", "medium", "-crf", "23",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:a", "aac", "-b:a", "96k", "-ar", "48000", "-ac", "1",
         "-shortest", str(out_path),
     ]
     log_path = out_path.with_suffix(".ffmpeg.log")
